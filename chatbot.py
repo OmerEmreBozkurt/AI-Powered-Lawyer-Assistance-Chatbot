@@ -175,27 +175,61 @@ class KanunRAGChatbot:
         """Maddeler için gömme vektörleri üretir veya yükler."""
         embeddings_file = "kanun_embeddings.json"
 
+        # Mevcut JSON dosyasını yükle
+        existing_data = None
         if os.path.exists(embeddings_file):
-            with open(embeddings_file, "r", encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(embeddings_file, "r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
+                print("Mevcut kanun_embeddings.json yüklendi.")
+            except Exception as e:
+                print(f"JSON yüklenirken hata: {e}. Yeni gömmeler üretilecek.")
 
-        # Gömme vektörlerini üret
-        for madde in self.kanun_data["maddeler"]:
-            madde["embedding"] = self._generate_embedding(madde["content"])
-        for madde in self.kanun_data["gecici_maddeler"]:
-            madde["embedding"] = self._generate_embedding(madde["content"])
-        for ek in self.kanun_data["ekler"]:
-            if ek["content"]:
-                ek["embedding"] = self._generate_embedding(ek["content"])
-            else:
-                ek["embedding"] = [0.0] * 768
+        # Yeni veriyi mevcut veriyle birleştir
+        if existing_data:
+            # Mevcut maddeleri ID’ye göre eşleştir
+            existing_maddeler = {m["id"]: m for m in existing_data.get("maddeler", [])}
+            existing_gecici = {m["id"]: m for m in existing_data.get("gecici_maddeler", [])}
+            existing_ekler = {(e.get("title") or ""): e for e in existing_data.get("ekler", [])}
+
+            # Yeni maddeler için gömme üret veya mevcutları kullan
+            for madde in self.kanun_data["maddeler"]:
+                if madde["id"] in existing_maddeler and "embedding" in existing_maddeler[madde["id"]]:
+                    madde["embedding"] = existing_maddeler[madde["id"]]["embedding"]
+                else:
+                    madde["embedding"] = self._generate_embedding(madde["content"])
+
+            for madde in self.kanun_data["gecici_maddeler"]:
+                if madde["id"] in existing_gecici and "embedding" in existing_gecici[madde["id"]]:
+                    madde["embedding"] = existing_gecici[madde["id"]]["embedding"]
+                else:
+                    madde["embedding"] = self._generate_embedding(madde["content"])
+
+            for ek in self.kanun_data["ekler"]:
+                ek_title = ek.get("title", "")
+                if ek_title in existing_ekler and "embedding" in existing_ekler[ek_title] and ek["content"]:
+                    ek["embedding"] = existing_ekler[ek_title]["embedding"]
+                else:
+                    ek["embedding"] = self._generate_embedding(ek["content"]) if ek["content"] else [0.0] * 768
+        else:
+            # JSON yoksa tüm gömmeleri üret
+            for madde in self.kanun_data["maddeler"]:
+                madde["embedding"] = self._generate_embedding(madde["content"])
+            for madde in self.kanun_data["gecici_maddeler"]:
+                madde["embedding"] = self._generate_embedding(madde["content"])
+            for ek in self.kanun_data["ekler"]:
+                ek["embedding"] = self._generate_embedding(ek["content"]) if ek["content"] else [0.0] * 768
 
         # JSON’a kaydet
-        with open(embeddings_file, "w", encoding="utf-8") as f:
-            json.dump(self.kanun_data, f, ensure_ascii=False, indent=2)
+        try:
+            with open(embeddings_file, "w", encoding="utf-8") as f:
+                json.dump(self.kanun_data, f, ensure_ascii=False, indent=2)
+            print(f"{len(self.kanun_data['maddeler'])} madde, "
+                  f"{len(self.kanun_data['gecici_maddeler'])} geçici madde ve "
+                  f"{len(self.kanun_data['ekler'])} ek işlendi.")
+        except Exception as e:
+            print(f"JSON kaydederken hata: {e}")
 
-        print(f"{len(self.kanun_data['maddeler'])} madde ve "
-              f"{len(self.kanun_data['gecici_maddeler'])} geçici madde işlendi.")
         return self.kanun_data
 
     def find_best_passage(self, query, top_k=2):
@@ -207,7 +241,7 @@ class KanunRAGChatbot:
         )["embedding"]
 
         all_maddeler = self.kanun_data["maddeler"] + self.kanun_data["gecici_maddeler"]
-        embeddings = np.array([m["embedding"] for m in all_maddeler])
+        embeddings = np.array([m.get("embedding", [0.0] * 768) for m in all_maddeler])
         dot_products = np.dot(embeddings, query_embedding)
         top_indices = np.argsort(dot_products)[::-1][:top_k]
 
@@ -218,7 +252,7 @@ class KanunRAGChatbot:
         maddeler = self.find_best_passage(query)
 
         prompt = textwrap.dedent(f"""You are a helpful legal bot that answers questions based on Turkish laws.
-        Respond in a complete, conversational sentence in Turkish. Explain complicated concepts simply and show related laws.
+        Respond in a complete, conversational sentence in Turkish. Explain complicated concepts simply.
 
         SORU: '{query}'
         İLGİLİ MADDELER:

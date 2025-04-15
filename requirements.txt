@@ -1,0 +1,5 @@
+numpy
+python-docx
+python-dotenv
+google-generativeai
+
